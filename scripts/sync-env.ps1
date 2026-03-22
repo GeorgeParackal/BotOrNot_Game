@@ -31,9 +31,20 @@ if (-not $envMap.ContainsKey("GEMINI_API_KEY") -or [string]::IsNullOrWhiteSpace(
 
 $key = $envMap["GEMINI_API_KEY"] -replace "\\", "\\\\" -replace '"', '\"'
 
+$key2 = ""
+if ($envMap.ContainsKey("GEMINI_API_KEY2") -and -not [string]::IsNullOrWhiteSpace($envMap["GEMINI_API_KEY2"])) {
+    $key2 = $envMap["GEMINI_API_KEY2"] -replace "\\", "\\\\" -replace '"', '\"'
+}
+
+$key2Line = ""
+if ($key2 -ne "") {
+    $key2Line = "`n    GEMINI_API_KEY2 = `"$key2`"," 
+}
+
 $configContent = @"
 return {
     GEMINI_API_KEY = "$key",
+$key2Line
 }
 "@
 
