@@ -1,5 +1,9 @@
 {
+<<<<<<< HEAD
   "name": "VsCode adon",
+=======
+  "name": "BotOrNot_Game",
+>>>>>>> 9f602386459de772f38d6318c23887878e495558
   "tree": {
     "$className": "DataModel",
 
@@ -9,6 +13,13 @@
       }
     },
 
+<<<<<<< HEAD
+=======
+    "ServerStorage":{ 
+      "$path": "src/serverstorage"
+    },
+
+>>>>>>> 9f602386459de772f38d6318c23887878e495558
     "ServerScriptService": {
       "Server": {
         "$path": "src/server"
@@ -32,9 +43,15 @@
         "$properties": {
           "Anchored": true,
           "Color": [
+<<<<<<< HEAD
             0.38823,
             0.37254,
             0.38823
+=======
+            0,
+            1,
+            0
+>>>>>>> 9f602386459de772f38d6318c23887878e495558
           ],
           "Locked": true,
           "Position": [

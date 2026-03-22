@@ -1,12 +1,19 @@
 # Project place file
+<<<<<<< HEAD
 /VsCode adon.rbxlx
+=======
+/BotOrNot_Game.rbxlx
+>>>>>>> 9f602386459de772f38d6318c23887878e495558
 
 # Roblox Studio lock files
 /*.rbxlx.lock
 /*.rbxl.lock
 
 sourcemap.json
+<<<<<<< HEAD
 
 # Local API keys and generated secrets
 .env
 src/server/GeminiConfig.luau
+=======
+>>>>>>> 9f602386459de772f38d6318c23887878e495558
