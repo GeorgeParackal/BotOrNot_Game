@@ -1,8 +1,12 @@
-<<<<<<< HEAD
 local HttpService = game:GetService("HttpService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
-local function readGeminiConfig(): string?
+type GeminiKeys = {
+	promptKey: string,
+	analysisKey: string,
+}
+
+local function readGeminiConfig(): GeminiKeys?
 	local configModule = script.Parent:FindFirstChild("GeminiConfig")
 	if not configModule then
 		configModule = script:FindFirstChild("GeminiConfig")
@@ -25,10 +29,18 @@ local function readGeminiConfig(): string?
 		return nil
 	end
 
-	return apiKey
+	local apiKey2 = config.GEMINI_API_KEY2
+	if type(apiKey2) ~= "string" or apiKey2 == "" then
+		apiKey2 = apiKey
+	end
+
+	return {
+		promptKey = apiKey,
+		analysisKey = apiKey2,
+	}
 end
 
-local GEMINI_API_KEY = readGeminiConfig()
+local GEMINI_KEYS = readGeminiConfig()
 
 local remoteName = "RequestPrompt"
 local requestPromptRemote = ReplicatedStorage:FindFirstChild(remoteName) :: RemoteFunction?
@@ -36,6 +48,14 @@ if not requestPromptRemote then
 	requestPromptRemote = Instance.new("RemoteFunction")
 	requestPromptRemote.Name = remoteName
 	requestPromptRemote.Parent = ReplicatedStorage
+end
+
+local analysisRemoteName = "EvaluateAnswer"
+local evaluateAnswerRemote = ReplicatedStorage:FindFirstChild(analysisRemoteName) :: RemoteFunction?
+if not evaluateAnswerRemote then
+	evaluateAnswerRemote = Instance.new("RemoteFunction")
+	evaluateAnswerRemote.Name = analysisRemoteName
+	evaluateAnswerRemote.Parent = ReplicatedStorage
 end
 
 local fallbackPrompts = {
@@ -128,15 +148,51 @@ local function extractGeminiText(responseBody: {[string]: any}): string?
 		return nil
 	end
 
+	return text
+end
+
+local function isValidPromptText(text: string): boolean
 	if not string.find(text, "?") then
-		return nil
+		return false
 	end
 
 	if string.len(text) < 20 then
-		return nil
+		return false
 	end
 
-	return text
+	return true
+end
+
+local function parseAiAnalysis(rawText: string): {percent: number, explanation: string}?
+	local decodeOk, parsed = pcall(function()
+		return HttpService:JSONDecode(rawText)
+	end)
+
+	if decodeOk and type(parsed) == "table" then
+		local percent = parsed.ai_generated_percent
+		local explanation = parsed.explanation
+		if type(percent) == "number" and type(explanation) == "string" and explanation ~= "" then
+			local clamped = math.clamp(math.floor(percent + 0.5), 0, 100)
+			return {
+				percent = clamped,
+				explanation = explanation,
+			}
+		end
+	end
+
+	local numberText = string.match(rawText, "(%d?%d?%d)%%") or string.match(rawText, "(%d?%d?%d)")
+	if numberText then
+		local maybePercent = tonumber(numberText)
+		if maybePercent then
+			local clamped = math.clamp(math.floor(maybePercent + 0.5), 0, 100)
+			return {
+				percent = clamped,
+				explanation = rawText,
+			}
+		end
+	end
+
+	return nil
 end
 
 local function parseRetryDelaySeconds(responseBody: {[string]: any}): number?
@@ -172,7 +228,7 @@ local function parseRetryDelaySeconds(responseBody: {[string]: any}): number?
 end
 
 local function requestGeminiPrompt(): string?
-	if not GEMINI_API_KEY then
+	if not GEMINI_KEYS then
 		return nil
 	end
 
@@ -215,7 +271,7 @@ local function requestGeminiPrompt(): string?
 			continue
 		end
 
-		local endpoint = "https://generativelanguage.googleapis.com/v1beta/models/" .. modelName .. ":generateContent?key=" .. HttpService:UrlEncode(GEMINI_API_KEY)
+		local endpoint = "https://generativelanguage.googleapis.com/v1beta/models/" .. modelName .. ":generateContent?key=" .. HttpService:UrlEncode(GEMINI_KEYS.promptKey)
 
 		local ok, response = pcall(function()
 			return HttpService:RequestAsync({
@@ -273,8 +329,102 @@ local function requestGeminiPrompt(): string?
 		end
 
 		local text = extractGeminiText(responseBody)
-		if text then
+		if text and isValidPromptText(text) then
 			return text
+		end
+	end
+
+	return nil
+end
+
+local function requestAnswerEvaluation(answerText: string, promptText: string): {percent: number, explanation: string}?
+	if not GEMINI_KEYS then
+		return nil
+	end
+
+	local candidateModels = {
+		"gemini-2.5-flash",
+		"gemini-3.1-flash-lite-preview",
+		"gemini-3-flash-preview",
+	}
+
+	local instruction = table.concat({
+		"You are evaluating whether a student's answer looks AI-generated.",
+		"Prompt shown to student: " .. promptText,
+		"Student answer: " .. answerText,
+		"Return STRICT JSON only with keys ai_generated_percent and explanation.",
+		"ai_generated_percent must be a number 0-100.",
+		"explanation must be one concise paragraph explaining your reasoning.",
+	}, "\n")
+
+	local payload = {
+		contents = {
+			{
+				role = "user",
+				parts = {
+					{
+						text = instruction,
+					},
+				},
+			},
+		},
+		generationConfig = {
+			temperature = 0.2,
+			maxOutputTokens = 220,
+		},
+	}
+
+	local body = HttpService:JSONEncode(payload)
+
+	for _, modelName in candidateModels do
+		if disabledModels[modelName] then
+			continue
+		end
+
+		local endpoint = "https://generativelanguage.googleapis.com/v1beta/models/" .. modelName .. ":generateContent?key=" .. HttpService:UrlEncode(GEMINI_KEYS.analysisKey)
+
+		local ok, response = pcall(function()
+			return HttpService:RequestAsync({
+				Url = endpoint,
+				Method = "POST",
+				Headers = {
+					["Content-Type"] = "application/json",
+				},
+				Body = body,
+			})
+		end)
+
+		if not ok then
+			warn("Gemini analysis request failed for model " .. modelName .. ": " .. tostring(response))
+			continue
+		end
+
+		if not response.Success then
+			if response.StatusCode == 404 then
+				disabledModels[modelName] = true
+				continue
+			end
+
+			warn("Gemini analysis unsuccessful. Model " .. modelName .. ", status " .. tostring(response.StatusCode))
+			continue
+		end
+
+		local decodeOk, responseBody = pcall(function()
+			return HttpService:JSONDecode(response.Body)
+		end)
+
+		if not decodeOk then
+			continue
+		end
+
+		local rawText = extractGeminiText(responseBody)
+		if not rawText then
+			continue
+		end
+
+		local analysis = parseAiAnalysis(rawText)
+		if analysis then
+			return analysis
 		end
 	end
 
@@ -289,52 +439,27 @@ requestPromptRemote.OnServerInvoke = function()
 
 	return getFallbackPrompt()
 end
-=======
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local ServerScriptService = game:GetService("ServerScriptService")
 
-local PromptGenerator = require(ReplicatedStorage:WaitForChild("PromptGenerator"))
-local remotesFolder = ReplicatedStorage:FindFirstChild("Remotes")
-if not remotesFolder then
-	remotesFolder = Instance.new("Folder")
-	remotesFolder.Name = "Remotes"
-	remotesFolder.Parent = ReplicatedStorage
+evaluateAnswerRemote.OnServerInvoke = function(_player: Player, answerText: string, promptText: string)
+	if type(answerText) ~= "string" or answerText == "" then
+		return {
+			percent = 0,
+			explanation = "Please type an answer before submitting.",
+		}
+	end
+
+	local safePrompt = ""
+	if type(promptText) == "string" then
+		safePrompt = promptText
+	end
+
+	local analysis = requestAnswerEvaluation(answerText, safePrompt)
+	if analysis then
+		return analysis
+	end
+
+	return {
+		percent = 0,
+		explanation = "Could not analyze with Gemini right now. Please try again.",
+	}
 end
-
-local showPrompt = remotesFolder:FindFirstChild("ShowPrompt")
-if not showPrompt then
-	showPrompt = Instance.new("RemoteEvent")
-	showPrompt.Name = "ShowPrompt"
-	showPrompt.Parent = remotesFolder
-end
-
-local submitResponse = remotesFolder:FindFirstChild("SubmitResponse")
-if not submitResponse then
-	submitResponse = Instance.new("RemoteEvent")
-	submitResponse.Name = "SubmitResponse"
-	submitResponse.Parent = remotesFolder
-end
-
-print("Remotes ready")
-
-task.wait(2)
-
-local HttpService = game:GetService("HttpService")
-
-local url = "http://127.0.0.1:8002/prompt?theme=general"
-
-local success, result = pcall(function()
-	return HttpService:GetAsync(url)
-end)
-
-local prompt = "Failed to load prompt."
-
-if success then
-	local data = HttpService:JSONDecode(result)
-	prompt = data.prompt or prompt
-else
-	warn("HTTP failed:", result)
-end
-showPrompt:FireAllClients(prompt)
-print("Prompt sent:", prompt)
->>>>>>> 9f602386459de772f38d6318c23887878e495558
