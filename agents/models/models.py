@@ -21,3 +21,17 @@ class SharedAgentState(Model):
     query: str
     user_sender_address: str
     result: str = ""
+
+
+class JudgeEvalRequest(Model):
+    player_name: str = ""
+    player_user_id: int = 0
+    prompt: str = ""
+    answer: str = ""
+    ai_generated_percent: float = 0
+    gemini_explanation: str = ""
+
+
+class JudgeEvalResponse(Model):
+    rating: int
+    response: str

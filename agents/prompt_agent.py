@@ -25,15 +25,25 @@ class PromptResponse(Model):
     prompt: str
 
 def generate_prompt(theme: str) -> str:
-    user_prompt = f"""
-Generate 1 short, creative party-game prompt for a Roblox game called BotOrNot.
-Theme: {theme}
-The prompt should be fun and make players try to sound like AI.
-Return only the prompt text, nothing else.
+    user_prompt = """
+Generate exactly 1 party-game writing prompt for Roblox BotOrNot.
+Requirements:
+- Return only the prompt text.
+- Length must be 2 to 3 complete sentences.
+- Make it very random and unpredictable.
+- Do not anchor on one topic category; mix surprising details.
+- Avoid repeating common school-style themes and avoid reusing wording patterns.
+- Make it answerable by anyone.
+- Include at least one direct question ending with a question mark.
 """
     response = client.models.generate_content(
         model="gemini-2.5-flash",
         contents=user_prompt,
+        config={
+            "temperature": 1.4,
+            "top_p": 0.95,
+            "max_output_tokens": 90,
+        },
     )
     return response.text.strip()
 

@@ -2,7 +2,6 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 from uagents import Context, Protocol
-from agents.models.config import JUDGE_ANALYST_ADDRESS, JUDGE_HYPE_HOST_ADDRESS
 from agents.models.models import SharedAgentState
 from agents.services.state_service import state_service
 from uagents_core.contrib.protocols.chat import (
@@ -43,14 +42,15 @@ async def handle_message(ctx: Context, sender: str, msg: ChatMessage):
 
     response = None
 
-    if "judge_analyst" in text.lower():
-        await ctx.send(JUDGE_ANALYST_ADDRESS, state)
-        ctx.logger.info("Routing to Judge Analyst!")
-    elif "judge_hype_host" in text.lower():
-        await ctx.send(JUDGE_HYPE_HOST_ADDRESS, state)
-        ctx.logger.info("Routing to Judge Hype Host!")
+    if "judge_analyst" in text.lower() or "judge_hype_host" in text.lower() or "judge_skeptic" in text.lower():
+        response = (
+            "Judge routing is running in local single-call mode now. "
+            "Use the /run_judges REST endpoint to get analyst, hype_host, and skeptic outputs together."
+        )
     else:
-        response = "Mention Judge Analyst or Judge Hype Host in your message and I'll route it to them."
+        response = (
+            "Mention judge_analyst, judge_hype_host, or judge_skeptic to receive instructions for local multi-judge mode."
+        )
 
     if response:
         await ctx.send(

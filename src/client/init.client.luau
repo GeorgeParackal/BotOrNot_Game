@@ -89,6 +89,8 @@ local promptValueLabel: TextLabel? = nil
 local currentPromptText = ""
 local requestVersion = 0
 local hasHookedPlayButton = false
+local getOrCreatePromptUi: () -> ScreenGui
+
 
 local function requestAndSetPrompt(promptBox: TextLabel)
 	requestVersion += 1
@@ -110,7 +112,7 @@ local function requestAndSetPrompt(promptBox: TextLabel)
 	end)
 end
 
-local function getOrCreatePromptUi(): ScreenGui
+getOrCreatePromptUi = function(): ScreenGui
 	if promptGui then
 		return promptGui
 	end
@@ -122,7 +124,7 @@ local function getOrCreatePromptUi(): ScreenGui
 
 	local panel = Instance.new("Frame")
 	panel.Name = "PromptPanel"
-	panel.Size = UDim2.fromOffset(420, 412)
+	panel.Size = UDim2.fromOffset(420, 560)
 	panel.Position = UDim2.new(0.5, -180, 0.08, 0)
 	panel.BackgroundColor3 = Color3.fromRGB(22, 26, 34)
 	panel.BorderSizePixel = 0
@@ -216,10 +218,49 @@ local function getOrCreatePromptUi(): ScreenGui
 	submitButtonCorner.CornerRadius = UDim.new(0, 10)
 	submitButtonCorner.Parent = submitButton
 
+	local tabBar = Instance.new("Frame")
+	tabBar.Name = "ResultsTabs"
+	tabBar.Size = UDim2.new(1, -24, 0, 30)
+	tabBar.Position = UDim2.fromOffset(12, 334)
+	tabBar.BackgroundTransparency = 1
+	tabBar.Parent = panel
+
+	local overviewTabButton = Instance.new("TextButton")
+	overviewTabButton.Name = "OverviewTab"
+	overviewTabButton.Size = UDim2.fromOffset(120, 30)
+	overviewTabButton.Position = UDim2.fromOffset(0, 0)
+	overviewTabButton.BackgroundColor3 = Color3.fromRGB(76, 132, 255)
+	overviewTabButton.BorderSizePixel = 0
+	overviewTabButton.Text = "Overview"
+	overviewTabButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+	overviewTabButton.TextSize = 14
+	overviewTabButton.Font = Enum.Font.GothamBold
+	overviewTabButton.Parent = tabBar
+
+	local overviewTabCorner = Instance.new("UICorner")
+	overviewTabCorner.CornerRadius = UDim.new(0, 8)
+	overviewTabCorner.Parent = overviewTabButton
+
+	local judgesTabButton = Instance.new("TextButton")
+	judgesTabButton.Name = "JudgesTab"
+	judgesTabButton.Size = UDim2.fromOffset(120, 30)
+	judgesTabButton.Position = UDim2.fromOffset(126, 0)
+	judgesTabButton.BackgroundColor3 = Color3.fromRGB(46, 54, 74)
+	judgesTabButton.BorderSizePixel = 0
+	judgesTabButton.Text = "Judges"
+	judgesTabButton.TextColor3 = Color3.fromRGB(210, 220, 245)
+	judgesTabButton.TextSize = 14
+	judgesTabButton.Font = Enum.Font.GothamBold
+	judgesTabButton.Parent = tabBar
+
+	local judgesTabCorner = Instance.new("UICorner")
+	judgesTabCorner.CornerRadius = UDim.new(0, 8)
+	judgesTabCorner.Parent = judgesTabButton
+
 	local analysisLabel = Instance.new("TextLabel")
 	analysisLabel.Name = "AnalysisLabel"
-	analysisLabel.Size = UDim2.new(1, -24, 0, 74)
-	analysisLabel.Position = UDim2.fromOffset(12, 334)
+	analysisLabel.Size = UDim2.new(1, -24, 0, 190)
+	analysisLabel.Position = UDim2.fromOffset(12, 368)
 	analysisLabel.BackgroundTransparency = 1
 	analysisLabel.Text = ""
 	analysisLabel.TextWrapped = true
@@ -229,6 +270,49 @@ local function getOrCreatePromptUi(): ScreenGui
 	analysisLabel.TextSize = 13
 	analysisLabel.Font = Enum.Font.Gotham
 	analysisLabel.Parent = panel
+
+	local judgesLabel = Instance.new("TextLabel")
+	judgesLabel.Name = "JudgesLabel"
+	judgesLabel.Size = UDim2.new(1, -24, 0, 190)
+	judgesLabel.Position = UDim2.fromOffset(12, 368)
+	judgesLabel.BackgroundTransparency = 1
+	judgesLabel.Text = ""
+	judgesLabel.TextWrapped = true
+	judgesLabel.TextXAlignment = Enum.TextXAlignment.Left
+	judgesLabel.TextYAlignment = Enum.TextYAlignment.Top
+	judgesLabel.TextColor3 = Color3.fromRGB(210, 220, 245)
+	judgesLabel.TextSize = 13
+	judgesLabel.Font = Enum.Font.Gotham
+	judgesLabel.Visible = false
+	judgesLabel.Parent = panel
+
+	local function showResultsTab(tabName: string)
+		local showJudges = tabName == "judges"
+		analysisLabel.Visible = not showJudges
+		judgesLabel.Visible = showJudges
+
+		if showJudges then
+			overviewTabButton.BackgroundColor3 = Color3.fromRGB(46, 54, 74)
+			overviewTabButton.TextColor3 = Color3.fromRGB(210, 220, 245)
+			judgesTabButton.BackgroundColor3 = Color3.fromRGB(76, 132, 255)
+			judgesTabButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+		else
+			overviewTabButton.BackgroundColor3 = Color3.fromRGB(76, 132, 255)
+			overviewTabButton.TextColor3 = Color3.fromRGB(255, 255, 255)
+			judgesTabButton.BackgroundColor3 = Color3.fromRGB(46, 54, 74)
+			judgesTabButton.TextColor3 = Color3.fromRGB(210, 220, 245)
+		end
+	end
+
+	showResultsTab("overview")
+
+	overviewTabButton.Activated:Connect(function()
+		showResultsTab("overview")
+	end)
+
+	judgesTabButton.Activated:Connect(function()
+		showResultsTab("judges")
+	end)
 
 	submitButton.Activated:Connect(function()
 		if answerBox.Text == "" then
@@ -241,6 +325,8 @@ local function getOrCreatePromptUi(): ScreenGui
 
 		submitButton.Text = "Analyzing..."
 		analysisLabel.Text = ""
+		judgesLabel.Text = ""
+		showResultsTab("overview")
 
 		task.spawn(function()
 			if not evaluateAnswerRemote then
@@ -261,6 +347,7 @@ local function getOrCreatePromptUi(): ScreenGui
 
 			local percent = result.percent
 			local explanation = result.explanation
+			local judgeMessages = result.judge_messages
 
 			if type(percent) ~= "number" then
 				percent = 0
@@ -270,7 +357,52 @@ local function getOrCreatePromptUi(): ScreenGui
 				explanation = "No explanation returned."
 			end
 
-			analysisLabel.Text = "AI generated likelihood: " .. tostring(math.floor(percent + 0.5)) .. "%\n" .. explanation
+			local sections = {
+				"Your Answer:\n" .. answerBox.Text,
+				"\nAI generated likelihood: " .. tostring(math.floor(percent + 0.5)) .. "%",
+				"Reason: " .. explanation,
+			}
+
+			local judgeSections = {}
+			local bubbleMessages = {}
+
+			if type(judgeMessages) == "table" then
+				for index, rawJudge in ipairs(judgeMessages) do
+					if type(rawJudge) == "table" then
+						local judgeName = rawJudge.name
+						local judgeRating = rawJudge.rating
+						local judgeResponse = rawJudge.response
+
+						if type(judgeName) ~= "string" or judgeName == "" then
+							judgeName = "Judge " .. tostring(index)
+						end
+
+						if type(judgeResponse) == "string" and judgeResponse ~= "" then
+							local ratingText = "N/A"
+							if type(judgeRating) == "number" then
+								ratingText = tostring(math.floor(judgeRating + 0.5)) .. "%"
+							end
+
+							table.insert(judgeSections, "[" .. judgeName .. "] Rating: " .. ratingText .. "\n" .. judgeResponse)
+							table.insert(bubbleMessages, {
+								name = judgeName,
+								response = judgeResponse,
+							})
+						end
+					elseif type(rawJudge) == "string" and rawJudge ~= "" then
+						table.insert(judgeSections, "[Judge " .. tostring(index) .. "]\n" .. rawJudge)
+						table.insert(bubbleMessages, rawJudge)
+					end
+				end
+			end
+
+			analysisLabel.Text = table.concat(sections, "\n")
+			if #judgeSections > 0 then
+				judgesLabel.Text = table.concat(judgeSections, "\n\n")
+			else
+				judgesLabel.Text = "No judge feedback returned."
+			end
+
 			submitButton.Text = "Submit"
 		end)
 	end)
@@ -329,5 +461,5 @@ playerGui.DescendantAdded:Connect(function(instance)
 end)
 
 if not hasHookedPlayButton then
-	showPromptUiAndGenerate()
+	warn("No Play button found to hook. Prompt UI will stay hidden until manually triggered.")
 end

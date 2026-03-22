@@ -1,9 +1,22 @@
 local HttpService = game:GetService("HttpService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
+local JUDGE_TRIGGER_ENDPOINT = "http://127.0.0.1:8003/run_judges"
+local DEFAULT_JUDGE_MESSAGES = {
+	"Clinical note: the structure reads deliberate, but the emotional signal is still detectable.",
+	"Hype meter says this answer has some robo flavor, but it needs more synthetic drama!",
+	"Skeptic stance: not convinced yet; I still see human fingerprints in the wording.",
+}
+
 type GeminiKeys = {
 	promptKey: string,
-	analysisKey: string,
+	analysisKey: string?,
+}
+
+type JudgeMessage = {
+	name: string,
+	rating: number,
+	response: string,
 }
 
 local function readGeminiConfig(): GeminiKeys?
@@ -31,7 +44,8 @@ local function readGeminiConfig(): GeminiKeys?
 
 	local apiKey2 = config.GEMINI_API_KEY2
 	if type(apiKey2) ~= "string" or apiKey2 == "" then
-		apiKey2 = apiKey
+		warn("GEMINI_API_KEY2 missing in GeminiConfig. Answer analysis and judge scoring will be unavailable.")
+		apiKey2 = nil
 	end
 
 	return {
@@ -57,6 +71,22 @@ if not evaluateAnswerRemote then
 	evaluateAnswerRemote.Name = analysisRemoteName
 	evaluateAnswerRemote.Parent = ReplicatedStorage
 end
+
+local function ensureRobotRigPresent()
+	local existing = ReplicatedStorage:FindFirstChild("RobotRig")
+	if existing then
+		return
+	end
+
+	-- Fallback placeholder so UI scripts that index ReplicatedStorage.RobotRig do not crash.
+	local placeholder = Instance.new("Model")
+	placeholder.Name = "RobotRig"
+	placeholder.Parent = ReplicatedStorage
+
+	warn("RobotRig was missing in ReplicatedStorage. Created placeholder Model named RobotRig.")
+end
+
+ensureRobotRigPresent()
 
 local fallbackPrompts = {
 	"What would you do if you had a superpower? Explain why you would choose that power.",
@@ -105,6 +135,8 @@ local rng = Random.new()
 local disabledModels: {[string]: boolean} = {}
 local nextGeminiAttemptTime = 0
 local lastCooldownWarnTime = 0
+local nextGeminiAnalysisAttemptTime = 0
+local lastAnalysisCooldownWarnTime = 0
 
 local function getFallbackPrompt(): string
 	return fallbackPrompts[rng:NextInteger(1, #fallbackPrompts)]
@@ -160,12 +192,31 @@ local function isValidPromptText(text: string): boolean
 		return false
 	end
 
+	local sentenceCount = 0
+	for segment in string.gmatch(text, "[^%.%!%?]+") do
+		local trimmed = string.gsub(segment, "^%s+", "")
+		trimmed = string.gsub(trimmed, "%s+$", "")
+		if trimmed ~= "" then
+			sentenceCount += 1
+		end
+	end
+
+	if sentenceCount < 2 or sentenceCount > 3 then
+		return false
+	end
+
 	return true
 end
 
 local function parseAiAnalysis(rawText: string): {percent: number, explanation: string}?
+	local cleanedText = string.gsub(rawText, "^%s*```json%s*", "")
+	cleanedText = string.gsub(cleanedText, "^%s*```%s*", "")
+	cleanedText = string.gsub(cleanedText, "%s*```%s*$", "")
+	cleanedText = string.gsub(cleanedText, "^%s+", "")
+	cleanedText = string.gsub(cleanedText, "%s+$", "")
+
 	local decodeOk, parsed = pcall(function()
-		return HttpService:JSONDecode(rawText)
+		return HttpService:JSONDecode(cleanedText)
 	end)
 
 	if decodeOk and type(parsed) == "table" then
@@ -180,14 +231,25 @@ local function parseAiAnalysis(rawText: string): {percent: number, explanation: 
 		end
 	end
 
-	local numberText = string.match(rawText, "(%d?%d?%d)%%") or string.match(rawText, "(%d?%d?%d)")
+	local extractedExplanation = string.match(cleanedText, '"explanation"%s*:%s*"(.-)"')
+	if extractedExplanation then
+		extractedExplanation = string.gsub(extractedExplanation, '\\n', ' ')
+		extractedExplanation = string.gsub(extractedExplanation, '\\"', '"')
+		extractedExplanation = string.gsub(extractedExplanation, '\\\\', '\\')
+		extractedExplanation = string.gsub(extractedExplanation, "^%s+", "")
+		extractedExplanation = string.gsub(extractedExplanation, "%s+$", "")
+	end
+
+	local numberText = string.match(cleanedText, '"ai_generated_percent"%s*:%s*(%d+%.?%d*)')
+		or string.match(cleanedText, "ai_generated_percent%s*[:=]%s*(%d+%.?%d*)")
+		or string.match(cleanedText, "AI%s*generated%s*likelihood%s*[:=]%s*(%d+%.?%d*)%%?")
 	if numberText then
 		local maybePercent = tonumber(numberText)
 		if maybePercent then
 			local clamped = math.clamp(math.floor(maybePercent + 0.5), 0, 100)
 			return {
 				percent = clamped,
-				explanation = rawText,
+				explanation = extractedExplanation or "Analysis complete.",
 			}
 		end
 	end
@@ -242,9 +304,9 @@ local function requestGeminiPrompt(): string?
 	end
 
 	local candidateModels = {
-		"gemini-2.5-flash",
-		"gemini-3.1-flash-lite-preview",
-		"gemini-3-flash-preview",
+		"gemini-2.5-flash-lite",  -- Cheapest stable
+		"gemini-3.1-flash-lite-preview",  -- Newer preview option
+		"gemini-2.5-flash",  -- Fallback
 	}
 
 	local payload = {
@@ -253,14 +315,15 @@ local function requestGeminiPrompt(): string?
 				role = "user",
 				parts = {
 					{
-						text = "Generate a prompt question for a middle school student. Pick a completely random topic like history, science, games, sports, animals, travel, food, art, school, hypotheticals, or culture. Return exactly 2 complete sentences that form a question with different wording each time. The question must be answerable by anyone without special knowledge. Always end with a question mark. Use varied sentence structures and never repeat the same topic or wording pattern.",
+						text = "Generate one very random writing prompt for a party game. Return only the prompt text as 2 to 3 complete sentences. Do not stick to a single topic domain and do not sound like school assignment topics. Use surprising combinations of ideas and vary sentence structure from previous outputs. The prompt must be answerable by anyone and include at least one direct question ending with a question mark.",
 					},
 				},
 			},
 		},
 		generationConfig = {
-			temperature = 1,
-			maxOutputTokens = 60,
+			temperature = 1.4,
+			topP = 0.95,
+			maxOutputTokens = 100,
 		},
 	}
 
@@ -342,10 +405,24 @@ local function requestAnswerEvaluation(answerText: string, promptText: string): 
 		return nil
 	end
 
+	if not GEMINI_KEYS.analysisKey then
+		warn("Skipping answer analysis because GEMINI_API_KEY2 is not configured.")
+		return nil
+	end
+
+	local now = os.clock()
+	if now < nextGeminiAnalysisAttemptTime then
+		if now - lastAnalysisCooldownWarnTime > 5 then
+			lastAnalysisCooldownWarnTime = now
+			warn("Gemini analysis cooldown active. Skipping analysis request.")
+		end
+		return nil
+	end
+
 	local candidateModels = {
-		"gemini-2.5-flash",
-		"gemini-3.1-flash-lite-preview",
-		"gemini-3-flash-preview",
+		"gemini-2.5-flash-lite",  -- Cheapest stable option for analysis
+		"gemini-3.1-flash-lite-preview",  -- Newer preview fallback
+		"gemini-2.5-flash",  -- Last resort
 	}
 
 	local instruction = table.concat({
@@ -371,6 +448,7 @@ local function requestAnswerEvaluation(answerText: string, promptText: string): 
 		generationConfig = {
 			temperature = 0.2,
 			maxOutputTokens = 220,
+			responseMimeType = "application/json",
 		},
 	}
 
@@ -405,6 +483,25 @@ local function requestAnswerEvaluation(answerText: string, promptText: string): 
 				continue
 			end
 
+			if response.StatusCode == 429 then
+				local cooldownSeconds = 30
+				local parsedBody: {[string]: any}? = nil
+				local decoded = pcall(function()
+					parsedBody = HttpService:JSONDecode(response.Body)
+				end)
+
+				if decoded and parsedBody and type(parsedBody.error) == "table" then
+					local retrySeconds = parseRetryDelaySeconds(parsedBody.error)
+					if retrySeconds then
+						cooldownSeconds = math.max(5, math.floor(retrySeconds + 0.5))
+					end
+				end
+
+				nextGeminiAnalysisAttemptTime = os.clock() + cooldownSeconds
+				warn("Gemini analysis quota/rate limit hit. Cooling down for " .. tostring(cooldownSeconds) .. "s.")
+				continue
+			end
+
 			warn("Gemini analysis unsuccessful. Model " .. modelName .. ", status " .. tostring(response.StatusCode))
 			continue
 		end
@@ -431,6 +528,134 @@ local function requestAnswerEvaluation(answerText: string, promptText: string): 
 	return nil
 end
 
+local function getDefaultJudgeMessages(basePercent: number): {JudgeMessage}
+	local clampedBase = math.clamp(math.floor(basePercent + 0.5), 0, 100)
+	return {
+		{
+			name = "The Analyst",
+			rating = clampedBase,
+			response = DEFAULT_JUDGE_MESSAGES[1],
+		},
+		{
+			name = "The Hype Host",
+			rating = math.clamp(clampedBase + 10, 0, 100),
+			response = DEFAULT_JUDGE_MESSAGES[2],
+		},
+		{
+			name = "The Skeptic",
+			rating = math.clamp(clampedBase - 10, 0, 100),
+			response = DEFAULT_JUDGE_MESSAGES[3],
+		},
+	}
+end
+
+local function requestJudgeMessages(player: Player, answerText: string, promptText: string, analysis: {percent: number, explanation: string}): {JudgeMessage}
+	local payload = {
+		player_name = player.Name,
+		player_user_id = player.UserId,
+		prompt = promptText,
+		answer = answerText,
+		ai_generated_percent = analysis.percent,
+		gemini_explanation = analysis.explanation,
+	}
+
+	local ok, encoded = pcall(function()
+		return HttpService:JSONEncode(payload)
+	end)
+
+	if not ok then
+		warn("Failed to encode judge payload. Using defaults.")
+		return getDefaultJudgeMessages(analysis.percent)
+	end
+
+	local requestOk, response = pcall(function()
+		return HttpService:RequestAsync({
+			Url = JUDGE_TRIGGER_ENDPOINT,
+			Method = "POST",
+			Headers = {
+				["Content-Type"] = "application/json",
+			},
+			Body = encoded,
+		})
+	end)
+
+	if not requestOk then
+		warn("Judge message request failed: " .. tostring(response))
+		return getDefaultJudgeMessages(analysis.percent)
+	end
+
+	if not response.Success then
+		warn("Judge message endpoint returned status " .. tostring(response.StatusCode))
+		return getDefaultJudgeMessages(analysis.percent)
+	end
+
+	local decodeOk, decoded = pcall(function()
+		return HttpService:JSONDecode(response.Body)
+	end)
+
+	if not decodeOk or type(decoded) ~= "table" then
+		warn("Judge message response decode failed. Using defaults.")
+		return getDefaultJudgeMessages(analysis.percent)
+	end
+
+	local analyst = decoded.analyst_result
+	local hypeHost = decoded.hype_host_result
+	local skeptic = decoded.skeptic_result
+	local analystRating = decoded.analyst_rating
+	local hypeHostRating = decoded.hype_host_rating
+	local skepticRating = decoded.skeptic_rating
+
+	if type(analyst) == "string" and analyst ~= ""
+		and type(hypeHost) == "string" and hypeHost ~= ""
+		and type(skeptic) == "string" and skeptic ~= ""
+		and type(analystRating) == "number"
+		and type(hypeHostRating) == "number"
+		and type(skepticRating) == "number" then
+		return {
+			{
+				name = "The Analyst",
+				rating = math.clamp(math.floor(analystRating + 0.5), 0, 100),
+				response = analyst,
+			},
+			{
+				name = "The Hype Host",
+				rating = math.clamp(math.floor(hypeHostRating + 0.5), 0, 100),
+				response = hypeHost,
+			},
+			{
+				name = "The Skeptic",
+				rating = math.clamp(math.floor(skepticRating + 0.5), 0, 100),
+				response = skeptic,
+			},
+		}
+	end
+
+	if type(analyst) == "string" and analyst ~= ""
+		and type(hypeHost) == "string" and hypeHost ~= ""
+		and type(skeptic) == "string" and skeptic ~= "" then
+		local base = math.clamp(math.floor(analysis.percent + 0.5), 0, 100)
+		return {
+			{
+				name = "The Analyst",
+				rating = base,
+				response = analyst,
+			},
+			{
+				name = "The Hype Host",
+				rating = math.clamp(base + 10, 0, 100),
+				response = hypeHost,
+			},
+			{
+				name = "The Skeptic",
+				rating = math.clamp(base - 10, 0, 100),
+				response = skeptic,
+			},
+		}
+	end
+
+	return getDefaultJudgeMessages(analysis.percent)
+end
+
 requestPromptRemote.OnServerInvoke = function()
 	local geminiPrompt = requestGeminiPrompt()
 	if geminiPrompt then
@@ -440,7 +665,7 @@ requestPromptRemote.OnServerInvoke = function()
 	return getFallbackPrompt()
 end
 
-evaluateAnswerRemote.OnServerInvoke = function(_player: Player, answerText: string, promptText: string)
+evaluateAnswerRemote.OnServerInvoke = function(player: Player, answerText: string, promptText: string)
 	if type(answerText) ~= "string" or answerText == "" then
 		return {
 			percent = 0,
@@ -455,7 +680,12 @@ evaluateAnswerRemote.OnServerInvoke = function(_player: Player, answerText: stri
 
 	local analysis = requestAnswerEvaluation(answerText, safePrompt)
 	if analysis then
-		return analysis
+		local judgeMessages = requestJudgeMessages(player, answerText, safePrompt, analysis)
+		return {
+			percent = analysis.percent,
+			explanation = analysis.explanation,
+			judge_messages = judgeMessages,
+		}
 	end
 
 	return {
